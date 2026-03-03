@@ -221,6 +221,8 @@ const selectedSettings = ref({
     theme: { displayText: '☀️ ' + t('qian-se'), value: 'light' },
     nativeTitleBar: { displayText: t('guan-bi'), value: 'off' },
     quality: { displayText: t('pu-tong-yin-zhi'), value: 'normal' },
+    playbackQuality: { displayText: t('pu-tong-yin-zhi'), value: 'normal' },
+    downloadQuality: { displayText: t('pu-tong-yin-zhi'), value: 'normal' },
     lyricsBackground: { displayText: t('da-kai'), value: 'on' },
     desktopLyrics: { displayText: t('guan-bi'), value: 'off' },
     statusBarLyrics: { displayText: t('guan-bi'), value: 'off' },
@@ -287,8 +289,13 @@ const settingSections = computed(() => [
         title: t('sheng-yin'),
         items: [
             {
-                key: 'quality',
-                label: t('yin-zhi-xuan-ze'),
+                key: 'playbackQuality',
+                label: '播放音质',
+                icon: '🎧 '
+            },
+            {
+                key: 'downloadQuality',
+                label: '下载音质',
                 icon: '🎧 '
             },
             {
@@ -467,6 +474,8 @@ const getItemIcon = (key) => {
         'nativeTitleBar': 'fas fa-window-maximize',
         'font': 'fas fa-font',
         'quality': 'fas fa-headphones',
+        'playbackQuality': 'fas fa-headphones',
+        'downloadQuality': 'fas fa-download',
         'loudnessNormalization': 'fas fa-sliders-h',
         'pauseOnAudioOutputChange': 'fas fa-exchange-alt',
         'audioOutputDevice': 'fas fa-volume-up',
@@ -498,6 +507,13 @@ const currentHelpLink = ref('');
 const selectionType = ref('');
 const fontUrlInput = ref('');
 const fontFamilyInput = ref('');
+const qualityOptions = [
+    { displayText: t('pu-tong-yin-zhi'), value: 'normal' },
+    { displayText: t('gao-yin-zhi-320kbps'), value: 'high' },
+    { displayText: t('wu-sun-yin-zhi-1104kbps'), value: 'lossless' },
+    { displayText: t('hires-yin-zhi'), value: 'hires' },
+    { displayText: t('kui-she-chao-qing-yin-zhi'), value: 'viper' }
+];
 
 // 选项配置
 const selectionTypeMap = {
@@ -538,12 +554,15 @@ const selectionTypeMap = {
     },
     quality: {
         title: t('yin-zhi-xuan-ze'),
-        options: [
-            { displayText: t('pu-tong-yin-zhi'), value: 'normal' },
-            { displayText: t('gao-yin-zhi-320kbps'), value: 'high' },
-            { displayText: t('wu-sun-yin-zhi-1104kbps'), value: 'lossless' },
-            { displayText: t('hires-yin-zhi'), value: 'hires' }
-        ]
+        options: qualityOptions
+    },
+    playbackQuality: {
+        title: '播放音质',
+        options: qualityOptions
+    },
+    downloadQuality: {
+        title: '下载音质',
+        options: qualityOptions
     },
     lyricsBackground: {
         title: t('xian-shi-ge-ci-bei-jing'),
@@ -851,7 +870,15 @@ const openHelpLink = () => {
         window.$modal.alert(t('zhuang-tai-lan-ge-ci-jin-zhi-chi-mac'));
         return;
     }
+    const previousOption = { ...selectedSettings.value[selectionType.value] };
     selectedSettings.value[selectionType.value] = option;
+    const validateQualitySelection = () => {
+        if (!MoeAuth.isAuthenticated) {
+            window.$modal.alert(t('gao-pin-zhi-yin-le-xu-yao-deng-lu-hou-cai-neng-bo-fango'));
+            return false;
+        }
+        return true;
+    };
     const actions = {
         'themeColor': () => proxy.$applyColorTheme(option.value),
         'theme': () => proxy.$setTheme(option.value),
@@ -859,12 +886,9 @@ const openHelpLink = () => {
             proxy.$i18n.locale = option.value;
             document.documentElement.lang = option.value;
         },
-        'quality': () => {
-            if (!MoeAuth.isAuthenticated) {
-                window.$modal.alert(t('gao-pin-zhi-yin-le-xu-yao-deng-lu-hou-cai-neng-bo-fango'));
-                return;
-            }
-        },
+        'quality': validateQualitySelection,
+        'playbackQuality': validateQualitySelection,
+        'downloadQuality': validateQualitySelection,
         'highDpi': () => {
             selectedSettings.value.dpiScale = {
                 value: dpiScale.value.toString(),
@@ -912,7 +936,11 @@ const openHelpLink = () => {
             }));
         }
     };
-    await actions[selectionType.value]?.();
+    const actionResult = await actions[selectionType.value]?.();
+    if (actionResult === false) {
+        selectedSettings.value[selectionType.value] = previousOption;
+        return;
+    }
     saveSettings();
     if(!['apiMode','font','fontUrl', 'proxy', 'apiBaseUrlMode'].includes(selectionType.value)) closeSelection();
     const refreshHintTypes = ['nativeTitleBar','lyricsBackground', 'lyricsFontSize', 'gpuAcceleration', 'highDpi', 'apiMode', 'apiBaseUrlMode', 'touchBar', 'preventAppSuspension', 'networkMode', 'font', 'proxy', 'dataSource', 'loudnessNormalization', 'statusBarLyrics'];
@@ -944,6 +972,12 @@ const saveSettings = () => {
     const settingsToSave = Object.fromEntries(
         Object.entries(selectedSettings.value).map(([key, setting]) => [key, setting.value])
     );
+    const playbackQuality = settingsToSave.playbackQuality || settingsToSave.quality || 'normal';
+    const downloadQuality = settingsToSave.downloadQuality || playbackQuality;
+    settingsToSave.playbackQuality = playbackQuality;
+    settingsToSave.downloadQuality = downloadQuality;
+    // 兼容旧版本配置字段
+    settingsToSave.quality = playbackQuality;
     settingsToSave.shortcuts = shortcuts.value;
     localStorage.setItem('settings', JSON.stringify(settingsToSave));
     isElectron() && window.electron.ipcRenderer.send('save-settings', JSON.parse(JSON.stringify(settingsToSave)));
@@ -960,6 +994,12 @@ onMounted(() => {
         if (savedSettings.apiBaseUrlMode === undefined) {
             const legacyUrl = savedSettings.apiBaseUrl || '';
             savedSettings.apiBaseUrlMode = legacyUrl ? 'custom' : 'default';
+        }
+        if (savedSettings.playbackQuality === undefined) {
+            savedSettings.playbackQuality = savedSettings.quality || 'normal';
+        }
+        if (savedSettings.downloadQuality === undefined) {
+            savedSettings.downloadQuality = savedSettings.playbackQuality || savedSettings.quality || 'normal';
         }
         for (const key in savedSettings) {
             if (key === 'shortcuts') continue;

@@ -45,7 +45,7 @@ export default function useSongQueue(t, musicQueueStore, queueList = null) {
                     viper: 'viper_clear',
                 };
 
-                const q = settings?.quality;
+                const q = settings?.playbackQuality || settings?.quality;
                 const mapped = qualityMap[q];
                 if (mapped) data.quality = mapped;
             }

@@ -1036,7 +1036,8 @@ const resolveSongDownloadInfo = async (hash) => {
     if (!MoeAuth.isAuthenticated) {
         params.free_part = 1;
     } else {
-        const mapped = qualityMap[settings?.quality];
+        const quality = settings?.downloadQuality || settings?.playbackQuality || settings?.quality;
+        const mapped = qualityMap[quality];
         if (mapped) params.quality = mapped;
     }
 

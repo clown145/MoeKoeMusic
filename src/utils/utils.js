@@ -69,21 +69,22 @@ export const getCover = (coverUrl, size) => {
 
 export const getQuality = (hashs, data) => {
     const savedConfig = JSON.parse(localStorage.getItem('settings'));
-    if (savedConfig?.quality === 'high') {
+    const selectedQuality = savedConfig?.playbackQuality || savedConfig?.quality;
+    if (selectedQuality === 'high') {
         if(hashs){
             return hashs[1]?.hash || hashs[0].hash;
         }
         return data['hash_320'] || data['hash_192'] || data['hash_128'] || data['hash'];
-    } else if (savedConfig?.quality === 'lossless') {
+    } else if (selectedQuality === 'lossless') {
         if(hashs){
             return hashs[hashs.length - 1]?.hash || hashs[1]?.hash || hashs[0].hash;
         }
         return data['hash_flac'] || data['hash_ape'] || data['hash'];
-    } else if (savedConfig?.quality === 'hires') {
+    } else if (selectedQuality === 'hires' || selectedQuality === 'viper') {
         if(hashs){
             return hashs[hashs.length - 1]?.hash;
         }
-        return data['hash_flac'] || data['hash_sq'] || data['hash_ape'] || data['hash'];
+        return data['hash_viper'] || data['hash_flac'] || data['hash_sq'] || data['hash_ape'] || data['hash'];
     }
     if(hashs){
         return hashs[0].hash;
