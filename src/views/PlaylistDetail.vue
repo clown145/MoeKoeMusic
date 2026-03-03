@@ -67,6 +67,10 @@
                             <ul>
                                 <li @click="appendSelectedToQueue"><i class="fas fa-list"></i> 添加到播放列表 </li>
                                 <li @click="addSelectedToOtherPlaylist" v-if="MoeAuth.UserInfo?.userid"><i class="fas fa-folder-plus"></i> 添加到其他歌单</li>
+                                <li @click="downloadSelectedTracks" :class="{ 'disabled': batchDownloadLoading }">
+                                    <i class="fas" :class="batchDownloadLoading ? 'fa-spinner fa-spin' : 'fa-download'"></i>
+                                    {{ batchDownloadLoading ? '下载中...' : '批量下载' }}
+                                </li>
                                 <li v-if="!isArtist && detail.list_create_userid == MoeAuth.UserInfo?.userid && route.query.listid" 
                                     @click="removeSelectedFromPlaylist"><i class="fas fa-trash-alt"></i> 取消收藏</li>
                             </ul>
@@ -267,6 +271,7 @@ const updateFavoriteStatus = () => {
 const batchSelectionMode = ref(false);
 const isBatchMenuVisible = ref(false);
 const selectedTracks = ref([]);
+const batchDownloadLoading = ref(false);
 let lastSelectedIndex = -1;
 const songs = ref([]);
 
@@ -968,6 +973,160 @@ const appendSelectedToQueue = async () => {
     isBatchMenuVisible.value = false;
 };
 
+const qualityMap = {
+    normal: '128',
+    high: '320',
+    lossless: 'flac',
+    hires: 'high',
+    viper: 'viper_clear'
+};
+
+const sanitizeFileName = (name, fallback = 'unknown') => {
+    const safeName = String(name || '')
+        .replace(/[\\/:*?"<>|]/g, '_')
+        .replace(/\s+/g, ' ')
+        .trim();
+    return safeName || fallback;
+};
+
+const getDownloadExt = (extName, url) => {
+    const normalizedExt = String(extName || '').replace(/^\./, '').toLowerCase();
+    if (normalizedExt && /^[a-z0-9]{1,5}$/.test(normalizedExt)) {
+        return normalizedExt;
+    }
+    try {
+        const pathname = new URL(url).pathname || '';
+        const match = pathname.match(/\.([a-z0-9]{1,5})$/i);
+        if (match && match[1]) {
+            return match[1].toLowerCase();
+        }
+    } catch (error) {
+        console.warn('[PlaylistDetail] 解析下载扩展名失败:', error);
+    }
+    return 'mp3';
+};
+
+const resolveSongDownloadInfo = async (hash) => {
+    const settings = JSON.parse(localStorage.getItem('settings') || '{}');
+    const params = { hash };
+
+    if (!MoeAuth.isAuthenticated) {
+        params.free_part = 1;
+    } else {
+        const mapped = qualityMap[settings?.quality];
+        if (mapped) params.quality = mapped;
+    }
+
+    const response = await get('/song/url', params);
+    if (response.status !== 1 || !response.url?.[0]) {
+        throw new Error('获取歌曲下载链接失败');
+    }
+
+    const downloadUrl = response.url[0];
+    return {
+        url: downloadUrl,
+        ext: getDownloadExt(response.extName, downloadUrl)
+    };
+};
+
+const triggerBlobDownload = (blob, fileName) => {
+    const objectUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = objectUrl;
+    anchor.download = fileName;
+    anchor.style.display = 'none';
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 3000);
+};
+
+const ensureAllTracksLoadedForBatch = async () => {
+    if (!hasMore.value) return;
+
+    isSearching.value = true;
+    try {
+        while (hasMore.value) {
+            if (isLoadingMore.value) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+                continue;
+            }
+            await loadMoreTracks();
+        }
+    } finally {
+        isSearching.value = false;
+    }
+};
+
+const downloadSelectedTracks = async () => {
+    if (selectedTracks.value.length === 0 || batchDownloadLoading.value) return;
+
+    let songsToDownload = selectedTracks.value
+        .map(index => filteredTracks.value[index])
+        .filter(Boolean);
+
+    if (songsToDownload.length === 0) {
+        $message.warning('未找到可下载歌曲');
+        return;
+    }
+
+    // 用户全选当前已加载歌曲时，优先提示是否拉取全量后再下载
+    if (selectedTracks.value.length === filteredTracks.value.length && hasMore.value) {
+        const shouldLoadAll = await window.$modal.confirm('当前歌单还有未加载歌曲，是否先加载全部歌曲再下载？');
+        if (shouldLoadAll) {
+            await ensureAllTracksLoadedForBatch();
+            selectedTracks.value = Array.from({ length: filteredTracks.value.length }, (_, i) => i);
+            songsToDownload = [...filteredTracks.value];
+        }
+    }
+
+    const confirmed = await window.$modal.confirm(`确定下载选中的 ${songsToDownload.length} 首歌曲吗？`);
+    if (!confirmed) return;
+
+    batchDownloadLoading.value = true;
+    isBatchMenuVisible.value = false;
+
+    let successCount = 0;
+    const failedSongs = [];
+    try {
+        for (let i = 0; i < songsToDownload.length; i++) {
+            const song = songsToDownload[i];
+            try {
+                const info = await resolveSongDownloadInfo(song.hash);
+                const response = await fetch(info.url);
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+
+                const blob = await response.blob();
+                const prefix = String(i + 1).padStart(3, '0');
+                const artist = sanitizeFileName(song.author, 'Unknown Artist');
+                const title = sanitizeFileName(song.name || song.OriSongName, `Track_${i + 1}`);
+                const fileName = `${prefix} ${artist} - ${title}.${info.ext}`;
+                triggerBlobDownload(blob, fileName);
+                successCount++;
+            } catch (error) {
+                console.error('[PlaylistDetail] 批量下载失败:', song?.name, error);
+                failedSongs.push(song?.name || song?.OriSongName || `第${i + 1}首`);
+            }
+        }
+    } finally {
+        batchDownloadLoading.value = false;
+    }
+
+    if (failedSongs.length === 0) {
+        $message.success(`批量下载完成，成功 ${successCount} 首`);
+        return;
+    }
+
+    const failedListPreview = failedSongs.slice(0, 8).join('\n');
+    window.$modal.alert(
+        `批量下载完成。\n成功：${successCount} 首\n失败：${failedSongs.length} 首` +
+        (failedListPreview ? `\n失败示例：\n${failedListPreview}` : '') +
+        (failedSongs.length > 8 ? '\n...' : '')
+    );
+};
+
 // 将选中歌曲添加到其他歌单
 const addSelectedToOtherPlaylist = async () => {
     if (selectedTracks.value.length === 0) return;
@@ -1007,10 +1166,16 @@ const removeSelectedFromPlaylist = async () => {
 };
 
 // 切换全选/取消全选
-const toggleSelectAll = () => {
+const toggleSelectAll = async () => {
     if (isAllSelected.value) {
         selectedTracks.value = [];
     } else {
+        if (hasMore.value) {
+            const shouldLoadAll = await window.$modal.confirm('当前仅加载了部分歌曲，是否先加载全部歌曲后再全选？');
+            if (shouldLoadAll) {
+                await ensureAllTracksLoadedForBatch();
+            }
+        }
         selectedTracks.value = Array.from({ length: filteredTracks.value.length }, (_, i) => i);
     }
 };
@@ -1330,6 +1495,12 @@ const isCurrentPlaying = (hash) => {
 
 .batch-actions-menu li:hover {
     background-color: #f0f0f0;
+}
+
+.batch-actions-menu li.disabled {
+    opacity: 0.6;
+    pointer-events: none;
+    cursor: not-allowed;
 }
 
 /* 排序选择器样式 */

@@ -75,8 +75,23 @@ jobs:
     needs: increment-version
     strategy:
       matrix:
-        node: [lts/*]
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            node: lts/*
+            build_cmd: electron:build:linux
+            target: linux-amd64
+          - os: ubuntu-latest
+            node: lts/*
+            build_cmd: electron:build:linux-arm64
+            target: linux-arm64
+          - os: windows-latest
+            node: lts/*
+            build_cmd: electron:build:win
+            target: win
+          - os: macos-latest
+            node: lts/*
+            build_cmd: electron:build:macos
+            target: mac
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
@@ -92,12 +107,10 @@ jobs:
           cache: 'npm' # use cache
 
       - name: Build
-        env:
-          os: ${{ runner.os == 'Windows' && 'win' || runner.os == 'macOS' && 'macos' || 'linux' }}
         run: |
           npm run install-all
           npm run build
-          npm run electron:build:${{ env.os }}
+          npm run ${{ matrix.build_cmd }}
 
       - name: Rename files - win
         if: runner.os == 'Windows'
@@ -111,10 +124,20 @@ jobs:
           mv "./dist_electron/MoeKoe Music-arm64.dmg" "./MoeKoe_Music_${{ needs.increment-version.outputs.version }}-arm64.dmg"
           mv "./dist_electron/MoeKoe Music-x64.dmg" "./MoeKoe_Music_${{ needs.increment-version.outputs.version }}-x64.dmg"
       - name: Rename files - linux
-        if: runner.os == 'Linux'
+        if: matrix.target == 'linux-amd64'
         run: |
-          mv "./dist_electron/MoeKoe Music.AppImage" "./MoeKoe_Music_${{ needs.increment-version.outputs.version }}.AppImage"
-          mv "./dist_electron/MoeKoe Music.deb" "./MoeKoe_Music_${{ needs.increment-version.outputs.version }}_amd64.deb"
+          APPIMAGE=$(find "./dist_electron" -maxdepth 1 -type f -name "*.AppImage" | head -n 1)
+          DEB=$(find "./dist_electron" -maxdepth 1 -type f -name "*.deb" | head -n 1)
+          mv "$APPIMAGE" "./MoeKoe_Music_${{ needs.increment-version.outputs.version }}.AppImage"
+          mv "$DEB" "./MoeKoe_Music_${{ needs.increment-version.outputs.version }}_amd64.deb"
+
+      - name: Rename files - linux arm64
+        if: matrix.target == 'linux-arm64'
+        run: |
+          APPIMAGE=$(find "./dist_electron" -maxdepth 1 -type f -name "*.AppImage" | head -n 1)
+          DEB=$(find "./dist_electron" -maxdepth 1 -type f -name "*.deb" | head -n 1)
+          mv "$APPIMAGE" "./MoeKoe_Music_${{ needs.increment-version.outputs.version }}-arm64.AppImage"
+          mv "$DEB" "./MoeKoe_Music_${{ needs.increment-version.outputs.version }}_arm64.deb"
 
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
@@ -130,3 +153,5 @@ jobs:
 
             ./MoeKoe_Music_${{ needs.increment-version.outputs.version }}.AppImage
             ./MoeKoe_Music_${{ needs.increment-version.outputs.version }}_amd64.deb
+            ./MoeKoe_Music_${{ needs.increment-version.outputs.version }}-arm64.AppImage
+            ./MoeKoe_Music_${{ needs.increment-version.outputs.version }}_arm64.deb
