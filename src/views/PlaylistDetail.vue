@@ -69,7 +69,7 @@
                                 <li @click="addSelectedToOtherPlaylist" v-if="MoeAuth.UserInfo?.userid"><i class="fas fa-folder-plus"></i> 添加到其他歌单</li>
                                 <li @click="downloadSelectedTracks" :class="{ 'disabled': batchDownloadLoading }">
                                     <i class="fas" :class="batchDownloadLoading ? 'fa-spinner fa-spin' : 'fa-download'"></i>
-                                    {{ batchDownloadLoading ? '下载中...' : '批量下载' }}
+                                    {{ batchDownloadMenuLabel }}
                                 </li>
                                 <li v-if="!isArtist && detail.list_create_userid == MoeAuth.UserInfo?.userid && route.query.listid" 
                                     @click="removeSelectedFromPlaylist"><i class="fas fa-trash-alt"></i> 取消收藏</li>
@@ -90,6 +90,16 @@
                     </button>
                     <input type="text" v-model="searchQuery" @keyup.enter="searchTracks" :placeholder="t('sou-suo-ge-qu')" class="search-input" />
                 </div>
+            </div>
+
+            <div v-if="batchDownloadLoading" class="batch-download-progress">
+                <i class="fas fa-spinner fa-spin"></i>
+                <span>进度 {{ batchDownloadProgress.current }}/{{ batchDownloadProgress.total }}</span>
+                <span>成功 {{ batchDownloadProgress.success }}</span>
+                <span>失败 {{ batchDownloadProgress.failed }}</span>
+                <span v-if="batchDownloadProgress.currentSong" class="batch-download-current-song" :title="batchDownloadProgress.currentSong">
+                    当前：{{ batchDownloadProgress.currentSong }}
+                </span>
             </div>
 
             <!-- 表头 -->
@@ -272,6 +282,13 @@ const batchSelectionMode = ref(false);
 const isBatchMenuVisible = ref(false);
 const selectedTracks = ref([]);
 const batchDownloadLoading = ref(false);
+const batchDownloadProgress = ref({
+    total: 0,
+    current: 0,
+    success: 0,
+    failed: 0,
+    currentSong: '',
+});
 let lastSelectedIndex = -1;
 const songs = ref([]);
 
@@ -283,6 +300,12 @@ const artistSortType = ref('hot'); // 歌手歌曲排序类型：hot(热门) 或
 // 判断是否全选
 const isAllSelected = computed(() => {
     return selectedTracks.value.length === filteredTracks.value.length && filteredTracks.value.length > 0;
+});
+
+const batchDownloadMenuLabel = computed(() => {
+    if (!batchDownloadLoading.value) return '批量下载';
+    const { current, total } = batchDownloadProgress.value;
+    return total > 0 ? `下载中 ${current}/${total}` : '下载中...';
 });
 
 // 视图模式相关状态
@@ -1029,6 +1052,44 @@ const resolveSongDownloadInfo = async (hash) => {
     };
 };
 
+const isElectronBatchDownloadAvailable = () => {
+    return typeof window !== 'undefined' &&
+        !!window.electron &&
+        !!window.electronAPI &&
+        typeof window.electronAPI.showOpenDialog === 'function' &&
+        typeof window.electronAPI.downloadFileToDirectory === 'function';
+};
+
+const buildDownloadFileName = (song, index, ext) => {
+    const prefix = String(index + 1).padStart(3, '0');
+    const artist = sanitizeFileName(song.author, 'Unknown Artist');
+    const title = sanitizeFileName(song.name || song.OriSongName, `Track_${index + 1}`);
+    return `${prefix} ${artist} - ${title}.${ext}`;
+};
+
+const chooseDownloadDirectory = async () => {
+    const result = await window.electronAPI.showOpenDialog({
+        title: '选择下载目录',
+        buttonLabel: '选择文件夹',
+        properties: ['openDirectory', 'createDirectory']
+    });
+    if (!result?.success || !result?.filePath) {
+        return '';
+    }
+    return result.filePath;
+};
+
+const saveFileByElectron = async ({ url, directory, fileName }) => {
+    const result = await window.electronAPI.downloadFileToDirectory({
+        url,
+        directory,
+        fileName
+    });
+    if (!result?.success) {
+        throw new Error(result?.message || '保存文件失败');
+    }
+};
+
 const triggerBlobDownload = (blob, fileName) => {
     const objectUrl = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
@@ -1083,7 +1144,23 @@ const downloadSelectedTracks = async () => {
     const confirmed = await window.$modal.confirm(`确定下载选中的 ${songsToDownload.length} 首歌曲吗？`);
     if (!confirmed) return;
 
+    const useElectronBatchDownload = isElectronBatchDownloadAvailable();
+    let downloadDirectory = '';
+    if (useElectronBatchDownload) {
+        downloadDirectory = await chooseDownloadDirectory();
+        if (!downloadDirectory) {
+            return;
+        }
+    }
+
     batchDownloadLoading.value = true;
+    batchDownloadProgress.value = {
+        total: songsToDownload.length,
+        current: 0,
+        success: 0,
+        failed: 0,
+        currentSong: '',
+    };
     isBatchMenuVisible.value = false;
 
     let successCount = 0;
@@ -1091,31 +1168,47 @@ const downloadSelectedTracks = async () => {
     try {
         for (let i = 0; i < songsToDownload.length; i++) {
             const song = songsToDownload[i];
+            const songName = song?.name || song?.OriSongName || `第${i + 1}首`;
+            batchDownloadProgress.value.current = i + 1;
+            batchDownloadProgress.value.currentSong = songName;
             try {
                 const info = await resolveSongDownloadInfo(song.hash);
-                const response = await fetch(info.url);
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}`);
+                const fileName = buildDownloadFileName(song, i, info.ext);
+
+                if (useElectronBatchDownload) {
+                    await saveFileByElectron({
+                        url: info.url,
+                        directory: downloadDirectory,
+                        fileName,
+                    });
+                } else {
+                    const response = await fetch(info.url);
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+                    const blob = await response.blob();
+                    triggerBlobDownload(blob, fileName);
                 }
 
-                const blob = await response.blob();
-                const prefix = String(i + 1).padStart(3, '0');
-                const artist = sanitizeFileName(song.author, 'Unknown Artist');
-                const title = sanitizeFileName(song.name || song.OriSongName, `Track_${i + 1}`);
-                const fileName = `${prefix} ${artist} - ${title}.${info.ext}`;
-                triggerBlobDownload(blob, fileName);
                 successCount++;
+                batchDownloadProgress.value.success = successCount;
             } catch (error) {
                 console.error('[PlaylistDetail] 批量下载失败:', song?.name, error);
-                failedSongs.push(song?.name || song?.OriSongName || `第${i + 1}首`);
+                failedSongs.push(songName);
+                batchDownloadProgress.value.failed = failedSongs.length;
             }
         }
     } finally {
+        batchDownloadProgress.value.currentSong = '';
         batchDownloadLoading.value = false;
     }
 
     if (failedSongs.length === 0) {
-        $message.success(`批量下载完成，成功 ${successCount} 首`);
+        if (useElectronBatchDownload) {
+            $message.success(`批量下载完成，成功 ${successCount} 首（保存到：${downloadDirectory}）`);
+        } else {
+            $message.success(`批量下载完成，成功 ${successCount} 首`);
+        }
         return;
     }
 
@@ -1501,6 +1594,29 @@ const isCurrentPlaying = (hash) => {
     opacity: 0.6;
     pointer-events: none;
     cursor: not-allowed;
+}
+
+.batch-download-progress {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+    padding: 8px 12px;
+    border: 1px solid var(--secondary-color);
+    border-radius: 6px;
+    font-size: 13px;
+    color: var(--text-color);
+}
+
+.batch-download-progress i {
+    color: var(--primary-color);
+}
+
+.batch-download-current-song {
+    max-width: 380px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 /* 排序选择器样式 */

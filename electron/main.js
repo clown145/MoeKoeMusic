@@ -12,6 +12,10 @@ import statusBarLyricsService from './services/statusBarLyricsService.js';
 import Store from 'electron-store';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { createWriteStream, constants as fsConstants } from 'fs';
+import { access, mkdir, unlink } from 'fs/promises';
+import { Readable } from 'stream';
+import { pipeline } from 'stream/promises';
 import { t } from './language/i18n.js';
 
 let mainWindow = null;
@@ -280,6 +284,84 @@ ipcMain.on('set-tray-title', (event, title) => {
     createTray(mainWindow, t('now-playing') + title);
     mainWindow.setTitle(title);
 })
+
+const sanitizeFileName = (name, fallback = 'track.mp3') => {
+    const safeName = String(name || '')
+        .replace(/[\\/:*?"<>|]/g, '_')
+        .replace(/\s+/g, ' ')
+        .trim();
+    return safeName || fallback;
+};
+
+const ensureUniqueFilePath = async (directory, fileName) => {
+    const parsed = path.parse(fileName);
+    const baseName = parsed.name || 'track';
+    const ext = parsed.ext || '';
+
+    let attempt = 0;
+    while (true) {
+        const suffix = attempt === 0 ? '' : ` (${attempt})`;
+        const candidatePath = path.join(directory, `${baseName}${suffix}${ext}`);
+
+        try {
+            await access(candidatePath, fsConstants.F_OK);
+            attempt++;
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                return candidatePath;
+            }
+            throw error;
+        }
+    }
+};
+
+const downloadRemoteFileToPath = async (url, targetPath) => {
+    const response = await fetch(url, { redirect: 'follow' });
+    if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+    }
+    if (!response.body) {
+        throw new Error('Empty response body');
+    }
+
+    const bodyStream = Readable.fromWeb(response.body);
+    const fileStream = createWriteStream(targetPath);
+    try {
+        await pipeline(bodyStream, fileStream);
+    } catch (error) {
+        try {
+            await unlink(targetPath);
+        } catch {}
+        throw error;
+    }
+};
+
+ipcMain.handle('download-file-to-directory', async (event, payload = {}) => {
+    const { url, directory, fileName } = payload;
+
+    if (!url || !directory || !fileName) {
+        return { success: false, message: '缺少下载参数' };
+    }
+
+    try {
+        await mkdir(directory, { recursive: true });
+        const safeFileName = sanitizeFileName(fileName, 'track.mp3');
+        const targetPath = await ensureUniqueFilePath(directory, safeFileName);
+        await downloadRemoteFileToPath(url, targetPath);
+
+        return {
+            success: true,
+            filePath: targetPath,
+            fileName: path.basename(targetPath),
+        };
+    } catch (error) {
+        console.error('[download-file-to-directory] 下载失败:', error);
+        return {
+            success: false,
+            message: error.message || '下载失败',
+        };
+    }
+});
 
 
 ipcMain.handle('open-mv-window', (e, url) => {
