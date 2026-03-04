@@ -97,6 +97,8 @@
                 <span>进度 {{ batchDownloadProgress.current }}/{{ batchDownloadProgress.total }}</span>
                 <span>成功 {{ batchDownloadProgress.success }}</span>
                 <span>失败 {{ batchDownloadProgress.failed }}</span>
+                <span v-if="batchDownloadProgress.retries > 0">重试 {{ batchDownloadProgress.retries }}</span>
+                <span v-if="batchDownloadProgress.retriedSuccess > 0">重试成功 {{ batchDownloadProgress.retriedSuccess }}</span>
                 <span v-if="batchDownloadProgress.currentSong" class="batch-download-current-song" :title="batchDownloadProgress.currentSong">
                     当前：{{ batchDownloadProgress.currentSong }}
                 </span>
@@ -287,6 +289,8 @@ const batchDownloadProgress = ref({
     current: 0,
     success: 0,
     failed: 0,
+    retries: 0,
+    retriedSuccess: 0,
     currentSong: '',
 });
 let lastSelectedIndex = -1;
@@ -1091,6 +1095,82 @@ const saveFileByElectron = async ({ url, directory, fileName }) => {
     }
 };
 
+const BATCH_DOWNLOAD_MAX_ATTEMPTS = 3;
+const BATCH_DOWNLOAD_RETRY_DELAY_BASE_MS = 800;
+
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+const normalizeDownloadError = (error) => {
+    const message = String(error?.message || error || '未知错误')
+        .replace(/\s+/g, ' ')
+        .trim();
+    if (!message) return '未知错误';
+    return message.length > 160 ? `${message.slice(0, 160)}...` : message;
+};
+
+const downloadSingleTrackOnce = async ({ song, index, useElectronBatchDownload, downloadDirectory }) => {
+    const info = await resolveSongDownloadInfo(song.hash);
+    const fileName = buildDownloadFileName(song, index, info.ext);
+
+    if (useElectronBatchDownload) {
+        await saveFileByElectron({
+            url: info.url,
+            directory: downloadDirectory,
+            fileName,
+        });
+        return;
+    }
+
+    const response = await fetch(info.url);
+    if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+    }
+    const blob = await response.blob();
+    triggerBlobDownload(blob, fileName);
+};
+
+const downloadTrackWithRetry = async ({
+    song,
+    index,
+    useElectronBatchDownload,
+    downloadDirectory,
+    onAttempt,
+    onRetry
+}) => {
+    let attempt = 1;
+    let lastError = null;
+
+    while (attempt <= BATCH_DOWNLOAD_MAX_ATTEMPTS) {
+        onAttempt?.(attempt, BATCH_DOWNLOAD_MAX_ATTEMPTS);
+        try {
+            await downloadSingleTrackOnce({
+                song,
+                index,
+                useElectronBatchDownload,
+                downloadDirectory
+            });
+            return {
+                success: true,
+                attempts: attempt,
+            };
+        } catch (error) {
+            lastError = error;
+            if (attempt >= BATCH_DOWNLOAD_MAX_ATTEMPTS) {
+                break;
+            }
+            onRetry?.(attempt, error);
+            await sleep(BATCH_DOWNLOAD_RETRY_DELAY_BASE_MS * attempt);
+            attempt++;
+        }
+    }
+
+    return {
+        success: false,
+        attempts: BATCH_DOWNLOAD_MAX_ATTEMPTS,
+        reason: normalizeDownloadError(lastError),
+    };
+};
+
 const triggerBlobDownload = (blob, fileName) => {
     const objectUrl = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
@@ -1160,42 +1240,58 @@ const downloadSelectedTracks = async () => {
         current: 0,
         success: 0,
         failed: 0,
+        retries: 0,
+        retriedSuccess: 0,
         currentSong: '',
     };
     isBatchMenuVisible.value = false;
 
     let successCount = 0;
+    let retriedSuccessCount = 0;
+    let totalRetryCount = 0;
     const failedSongs = [];
     try {
         for (let i = 0; i < songsToDownload.length; i++) {
             const song = songsToDownload[i];
             const songName = song?.name || song?.OriSongName || `第${i + 1}首`;
+            const songArtist = song?.author || 'Unknown Artist';
             batchDownloadProgress.value.current = i + 1;
-            batchDownloadProgress.value.currentSong = songName;
-            try {
-                const info = await resolveSongDownloadInfo(song.hash);
-                const fileName = buildDownloadFileName(song, i, info.ext);
 
-                if (useElectronBatchDownload) {
-                    await saveFileByElectron({
-                        url: info.url,
-                        directory: downloadDirectory,
-                        fileName,
+            const result = await downloadTrackWithRetry({
+                song,
+                index: i,
+                useElectronBatchDownload,
+                downloadDirectory,
+                onAttempt: (attempt, maxAttempts) => {
+                    batchDownloadProgress.value.currentSong = `${songName}（尝试 ${attempt}/${maxAttempts}）`;
+                },
+                onRetry: (attempt, error) => {
+                    totalRetryCount++;
+                    batchDownloadProgress.value.retries = totalRetryCount;
+                    console.warn('[PlaylistDetail] 批量下载自动重试:', {
+                        songName,
+                        attempt,
+                        reason: normalizeDownloadError(error),
                     });
-                } else {
-                    const response = await fetch(info.url);
-                    if (!response.ok) {
-                        throw new Error(`HTTP ${response.status}`);
-                    }
-                    const blob = await response.blob();
-                    triggerBlobDownload(blob, fileName);
-                }
+                },
+            });
 
+            if (result.success) {
                 successCount++;
                 batchDownloadProgress.value.success = successCount;
-            } catch (error) {
-                console.error('[PlaylistDetail] 批量下载失败:', song?.name, error);
-                failedSongs.push(songName);
+                if (result.attempts > 1) {
+                    retriedSuccessCount++;
+                    batchDownloadProgress.value.retriedSuccess = retriedSuccessCount;
+                }
+            } else {
+                console.error('[PlaylistDetail] 批量下载失败:', song?.name, result.reason);
+                failedSongs.push({
+                    order: i + 1,
+                    name: songName,
+                    artist: songArtist,
+                    reason: result.reason || '下载失败',
+                    retries: Math.max(result.attempts - 1, 0),
+                });
                 batchDownloadProgress.value.failed = failedSongs.length;
             }
         }
@@ -1204,20 +1300,32 @@ const downloadSelectedTracks = async () => {
         batchDownloadLoading.value = false;
     }
 
+    const retrySummaryText = totalRetryCount > 0
+        ? `，自动重试 ${totalRetryCount} 次（成功恢复 ${retriedSuccessCount} 首）`
+        : '';
+
     if (failedSongs.length === 0) {
         if (useElectronBatchDownload) {
-            $message.success(`批量下载完成，成功 ${successCount} 首（保存到：${downloadDirectory}）`);
+            $message.success(`批量下载完成，成功 ${successCount} 首${retrySummaryText}（保存到：${downloadDirectory}）`);
         } else {
-            $message.success(`批量下载完成，成功 ${successCount} 首`);
+            $message.success(`批量下载完成，成功 ${successCount} 首${retrySummaryText}`);
         }
         return;
     }
 
-    const failedListPreview = failedSongs.slice(0, 8).join('\n');
+    const failedDetailText = failedSongs
+        .map(item =>
+            `${item.order}. ${item.artist} - ${item.name}\n` +
+            `   失败原因：${item.reason}\n` +
+            `   重试次数：${item.retries}`
+        )
+        .join('\n');
+
     window.$modal.alert(
-        `批量下载完成。\n成功：${successCount} 首\n失败：${failedSongs.length} 首` +
-        (failedListPreview ? `\n失败示例：\n${failedListPreview}` : '') +
-        (failedSongs.length > 8 ? '\n...' : '')
+        `批量下载完成。\n总数：${songsToDownload.length} 首\n成功：${successCount} 首\n失败：${failedSongs.length} 首` +
+        (retrySummaryText ? `\n${retrySummaryText.replace(/^，/, '')}` : '') +
+        (useElectronBatchDownload ? `\n保存目录：${downloadDirectory}` : '') +
+        (failedDetailText ? `\n\n失败明细：\n${failedDetailText}` : '')
     );
 };
 
