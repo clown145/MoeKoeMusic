@@ -88,6 +88,14 @@
                     <button class="view-mode-btn" @click="toggleViewMode" :title="viewMode === 'list' ? '切换到网格视图' : '切换到列表视图'">
                         <i class="fas" :class="viewMode === 'list' ? 'fa-th' : 'fa-list'"></i>
                     </button>
+                    <button
+                        v-if="batchDownloadRetryQueue.length > 0"
+                        class="retry-failed-btn"
+                        @click="retryFailedBatchDownloads"
+                        :disabled="batchDownloadLoading">
+                        <i class="fas" :class="batchDownloadLoading ? 'fa-spinner fa-spin' : 'fa-rotate-right'"></i>
+                        {{ batchDownloadLoading ? '重试中...' : `重试失败下载 (${batchDownloadRetryQueue.length})` }}
+                    </button>
                     <input type="text" v-model="searchQuery" @keyup.enter="searchTracks" :placeholder="t('sou-suo-ge-qu')" class="search-input" />
                 </div>
             </div>
@@ -284,6 +292,7 @@ const batchSelectionMode = ref(false);
 const isBatchMenuVisible = ref(false);
 const selectedTracks = ref([]);
 const batchDownloadLoading = ref(false);
+const batchDownloadRetryQueue = ref([]);
 const batchDownloadProgress = ref({
     total: 0,
     current: 0,
@@ -1200,29 +1209,10 @@ const ensureAllTracksLoadedForBatch = async () => {
     }
 };
 
-const downloadSelectedTracks = async () => {
-    if (selectedTracks.value.length === 0 || batchDownloadLoading.value) return;
+const runBatchDownload = async (songsToDownload, confirmText) => {
+    if (!Array.isArray(songsToDownload) || songsToDownload.length === 0 || batchDownloadLoading.value) return;
 
-    let songsToDownload = selectedTracks.value
-        .map(index => filteredTracks.value[index])
-        .filter(Boolean);
-
-    if (songsToDownload.length === 0) {
-        $message.warning('未找到可下载歌曲');
-        return;
-    }
-
-    // 用户全选当前已加载歌曲时，优先提示是否拉取全量后再下载
-    if (selectedTracks.value.length === filteredTracks.value.length && hasMore.value) {
-        const shouldLoadAll = await window.$modal.confirm('当前歌单还有未加载歌曲，是否先加载全部歌曲再下载？');
-        if (shouldLoadAll) {
-            await ensureAllTracksLoadedForBatch();
-            selectedTracks.value = Array.from({ length: filteredTracks.value.length }, (_, i) => i);
-            songsToDownload = [...filteredTracks.value];
-        }
-    }
-
-    const confirmed = await window.$modal.confirm(`确定下载选中的 ${songsToDownload.length} 首歌曲吗？`);
+    const confirmed = await window.$modal.confirm(confirmText);
     if (!confirmed) return;
 
     const useElectronBatchDownload = isElectronBatchDownloadAvailable();
@@ -1250,6 +1240,7 @@ const downloadSelectedTracks = async () => {
     let retriedSuccessCount = 0;
     let totalRetryCount = 0;
     const failedSongs = [];
+    const failedTrackQueue = [];
     try {
         for (let i = 0; i < songsToDownload.length; i++) {
             const song = songsToDownload[i];
@@ -1292,6 +1283,7 @@ const downloadSelectedTracks = async () => {
                     reason: result.reason || '下载失败',
                     retries: Math.max(result.attempts - 1, 0),
                 });
+                failedTrackQueue.push(song);
                 batchDownloadProgress.value.failed = failedSongs.length;
             }
         }
@@ -1299,6 +1291,8 @@ const downloadSelectedTracks = async () => {
         batchDownloadProgress.value.currentSong = '';
         batchDownloadLoading.value = false;
     }
+
+    batchDownloadRetryQueue.value = failedTrackQueue;
 
     const retrySummaryText = totalRetryCount > 0
         ? `，自动重试 ${totalRetryCount} 次（成功恢复 ${retriedSuccessCount} 首）`
@@ -1325,8 +1319,40 @@ const downloadSelectedTracks = async () => {
         `批量下载完成。\n总数：${songsToDownload.length} 首\n成功：${successCount} 首\n失败：${failedSongs.length} 首` +
         (retrySummaryText ? `\n${retrySummaryText.replace(/^，/, '')}` : '') +
         (useElectronBatchDownload ? `\n保存目录：${downloadDirectory}` : '') +
-        (failedDetailText ? `\n\n失败明细：\n${failedDetailText}` : '')
+        (failedDetailText ? `\n\n失败明细：\n${failedDetailText}` : '') +
+        (failedTrackQueue.length > 0 ? `\n\n可点击“重试失败下载 (${failedTrackQueue.length})”再次下载。` : '')
     );
+};
+
+const retryFailedBatchDownloads = async () => {
+    if (batchDownloadRetryQueue.value.length === 0 || batchDownloadLoading.value) return;
+    const retrySongs = [...batchDownloadRetryQueue.value];
+    await runBatchDownload(retrySongs, `将重试下载失败的 ${retrySongs.length} 首歌曲，是否继续？`);
+};
+
+const downloadSelectedTracks = async () => {
+    if (selectedTracks.value.length === 0 || batchDownloadLoading.value) return;
+
+    let songsToDownload = selectedTracks.value
+        .map(index => filteredTracks.value[index])
+        .filter(Boolean);
+
+    if (songsToDownload.length === 0) {
+        $message.warning('未找到可下载歌曲');
+        return;
+    }
+
+    // 用户全选当前已加载歌曲时，优先提示是否拉取全量后再下载
+    if (selectedTracks.value.length === filteredTracks.value.length && hasMore.value) {
+        const shouldLoadAll = await window.$modal.confirm('当前歌单还有未加载歌曲，是否先加载全部歌曲再下载？');
+        if (shouldLoadAll) {
+            await ensureAllTracksLoadedForBatch();
+            selectedTracks.value = Array.from({ length: filteredTracks.value.length }, (_, i) => i);
+            songsToDownload = [...filteredTracks.value];
+        }
+    }
+
+    await runBatchDownload(songsToDownload, `确定下载选中的 ${songsToDownload.length} 首歌曲吗？`);
 };
 
 // 将选中歌曲添加到其他歌单
@@ -1644,6 +1670,29 @@ const isCurrentPlaying = (hash) => {
 
 .view-mode-btn i {
     font-size: 16px;
+}
+
+.retry-failed-btn {
+    background-color: transparent;
+    border: 1px solid var(--secondary-color);
+    padding: 5px 10px;
+    border-radius: 5px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-color);
+    gap: 6px;
+    transition: all 0.3s ease;
+}
+
+.retry-failed-btn:hover {
+    background-color: rgba(var(--primary-color-rgb), 0.1);
+}
+
+.retry-failed-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
 }
 
 .selected-count {
