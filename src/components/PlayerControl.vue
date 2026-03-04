@@ -51,6 +51,7 @@
                         class="fas fa-add"></i></button>
                 <button class="extra-btn" :title="t('fen-xiang-ge-qu')" @click="share(currentSong.name, currentSong.hash)"><i
                         class="fas fa-share"></i></button>
+                <button class="extra-btn" title="下载当前歌曲" @click="downloadCurrentSong"><i class="fas fa-download"></i></button>
                 <button class="extra-btn" @click="togglePlaybackMode">
                     <i v-if="currentPlaybackModeIndex != '2'" :class="currentPlaybackMode.icon"
                         :title="currentPlaybackMode.title"></i>
@@ -177,6 +178,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import { useMusicQueueStore } from '../stores/musicQueue';
+import { useDownloadQueueStore } from '../stores/downloadQueue';
 import { useI18n } from 'vue-i18n';
 import PlaylistSelectModal from './PlaylistSelectModal.vue';
 import QueueList from './QueueList.vue';
@@ -200,6 +202,7 @@ const playlistSelect = ref(null);
 const { t } = useI18n();
 const router = useRouter();
 const musicQueueStore = useMusicQueueStore();
+const downloadQueueStore = useDownloadQueueStore();
 const playlists = ref([]);
 const currentTime = ref(0);
 const lyricsFontSize = ref('24px');
@@ -577,6 +580,61 @@ const togglePlayPause = async () => {
             console.error('[PlayerControl] 播放失败:', retryError);
             window.$modal.alert(t('bo-fang-shi-bai'));
         }
+    }
+};
+
+const isElectronDownloadAvailable = () => {
+    return typeof window !== 'undefined' &&
+        !!window.electronAPI &&
+        typeof window.electronAPI.showOpenDialog === 'function' &&
+        typeof window.electronAPI.downloadFileToDirectory === 'function';
+};
+
+const chooseDownloadDirectory = async () => {
+    const defaultPath = localStorage.getItem('download_directory') || undefined;
+    const result = await window.electronAPI.showOpenDialog({
+        title: '选择下载目录',
+        buttonLabel: '选择文件夹',
+        defaultPath,
+        properties: ['openDirectory', 'createDirectory']
+    });
+
+    if (!result?.success || !result?.filePath) return '';
+    localStorage.setItem('download_directory', result.filePath);
+    return result.filePath;
+};
+
+const downloadCurrentSong = async () => {
+    const hash = String(currentSong.value?.hash || '').trim();
+    if (!hash) {
+        $message.warning('当前没有可下载歌曲');
+        return;
+    }
+    if (hash.startsWith('local_')) {
+        $message.warning('本地歌曲无需下载');
+        return;
+    }
+
+    const name = String(currentSong.value?.name || '').trim() || '未知歌曲';
+    const author = String(currentSong.value?.author || '').trim() || 'Unknown Artist';
+
+    let directory = '';
+    if (isElectronDownloadAvailable()) {
+        directory = await chooseDownloadDirectory();
+        if (!directory) return;
+    }
+
+    const added = downloadQueueStore.enqueueTracks([{
+        hash,
+        name,
+        author,
+        OriSongName: `${author} - ${name}`
+    }], { directory });
+
+    if (added > 0) {
+        $message.success('已加入下载队列');
+    } else {
+        $message.warning('加入下载队列失败');
     }
 };
 

@@ -390,4 +390,85 @@ watch(
         width: auto;
     }
 }
+
+:global(html.dark) .queue-toggle-btn {
+    background: rgba(30, 30, 30, 0.94) !important;
+    color: #e8e8e8 !important;
+    border-color: #444 !important;
+    box-shadow: 0 6px 14px rgba(0, 0, 0, 0.35);
+}
+
+:global(html.dark) .queue-panel {
+    background: rgba(24, 24, 24, 0.96);
+    border-color: #3a3a3a;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
+}
+
+:global(html.dark) .queue-header {
+    border-bottom-color: #333;
+}
+
+:global(html.dark) .queue-title h4 {
+    color: #efefef;
+}
+
+:global(html.dark) .queue-title span,
+:global(html.dark) .queue-progress span,
+:global(html.dark) .queue-item-status {
+    color: #a8a8a8;
+}
+
+:global(html.dark) .queue-close-btn {
+    color: #c9c9c9;
+}
+
+:global(html.dark) .queue-progress-bar {
+    background: #2d2d2d;
+}
+
+:global(html.dark) .queue-actions {
+    border-bottom-color: #333;
+}
+
+:global(html.dark) .queue-action-btn {
+    background: #242424 !important;
+    color: #e6e6e6 !important;
+    border-color: #474747 !important;
+}
+
+:global(html.dark) .queue-action-btn:hover {
+    background: #303030 !important;
+}
+
+:global(html.dark) .queue-list {
+    background: transparent;
+}
+
+:global(html.dark) .queue-empty {
+    color: #9a9a9a;
+}
+
+:global(html.dark) .queue-item {
+    background: #202020;
+    border-color: #3a3a3a;
+}
+
+:global(html.dark) .queue-item-name {
+    color: #e8e8e8;
+}
+
+:global(html.dark) .status-downloading {
+    background: rgba(22, 54, 84, 0.45);
+    border-color: #2f73b7;
+}
+
+:global(html.dark) .status-success {
+    background: rgba(35, 64, 44, 0.35);
+    border-color: #3f8d56;
+}
+
+:global(html.dark) .status-failed {
+    background: rgba(90, 34, 34, 0.35);
+    border-color: #a64545;
+}
 </style>

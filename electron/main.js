@@ -162,8 +162,12 @@ ipcMain.on('disclaimer-response', (event, accepted) => {
 ipcMain.on('window-control', (event, action) => {
     switch (action) {
         case 'close':
-            app.isQuitting = true;
-            app.quit();
+            if (store.get('settings')?.minimizeToTray === 'off') {
+                app.isQuitting = true;
+                app.quit();
+            } else {
+                mainWindow.close();
+            }
             break;
         case 'minimize':
             mainWindow.minimize();

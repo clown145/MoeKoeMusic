@@ -14,6 +14,7 @@
                 </ul>
             </li>
             <li v-if="contextSong.mvhash" @click="playMV(contextSong.mvhash)"><i class="fa-solid fa-video"></i> 播放MV</li>
+            <li @click="downloadSong(contextSong)"><i class="fa-solid fa-download"></i> 下载</li>
             <li @click="shareSong(contextSong)"><i class="fa-solid fa-share-nodes"></i> 分享</li>
             <li v-if="MoeAuth.isAuthenticated && listId && contextSong.userid === MoeAuth.UserInfo.userid" @click="cancel()"><i class="fa-solid fa-heart"></i> 取消收藏</li>
             <li v-if="MoeAuth.isAuthenticated" @click="addToNext(contextSong)"><i class="fa-solid fa-arrow-right"></i> 添加到下一首</li>
@@ -26,11 +27,13 @@ import { ref, onMounted, onBeforeUnmount } from 'vue';
 import { useRouter } from 'vue-router';
 import { get } from '../utils/request';
 import { MoeAuthStore } from '../stores/store';
+import { useDownloadQueueStore } from '../stores/downloadQueue';
 import i18n from '@/utils/i18n';
 import { share } from '@/utils/utils';
 
 const router = useRouter();
 const MoeAuth = MoeAuthStore();
+const downloadQueueStore = useDownloadQueueStore();
 const showContextMenu = ref(false);
 const showSubMenu = ref(false);
 const menuPosition = ref({ x: 0, y: 0 });
@@ -111,6 +114,80 @@ const addToNext = async (song) => {
 
 const hideSubMenu = () => {
     showSubMenu.value = false;
+};
+
+const isElectronDownloadAvailable = () => {
+    return typeof window !== 'undefined' &&
+        !!window.electronAPI &&
+        typeof window.electronAPI.showOpenDialog === 'function' &&
+        typeof window.electronAPI.downloadFileToDirectory === 'function';
+};
+
+const chooseDownloadDirectory = async () => {
+    const defaultPath = localStorage.getItem('download_directory') || undefined;
+    const result = await window.electronAPI.showOpenDialog({
+        title: '选择下载目录',
+        buttonLabel: '选择文件夹',
+        defaultPath,
+        properties: ['openDirectory', 'createDirectory']
+    });
+
+    if (!result?.success || !result?.filePath) return '';
+    localStorage.setItem('download_directory', result.filePath);
+    return result.filePath;
+};
+
+const parseSongDownloadMeta = (song) => {
+    const hash = song?.FileHash || song?.hash || '';
+    const originalName = String(song?.OriSongName || song?.FileName || song?.filename || song?.name || '').trim();
+    let title = String(song?.name || song?.FileName || '').trim();
+    let author = String(song?.author || song?.AuthorName || song?.author_name || '').trim();
+
+    if ((!title || !author) && originalName.includes(' - ')) {
+        const [left, ...rest] = originalName.split(' - ');
+        if (!author) author = String(left || '').trim();
+        if (!title) title = String(rest.join(' - ') || '').trim();
+    }
+
+    if (!title) title = originalName || '未知歌曲';
+    return {
+        hash,
+        title,
+        author: author || 'Unknown Artist',
+        originalName: originalName || `${author || 'Unknown Artist'} - ${title}`
+    };
+};
+
+const downloadSong = async (song) => {
+    const info = parseSongDownloadMeta(song);
+    if (!info.hash) {
+        $message.warning('当前歌曲暂不支持下载');
+        hideContextMenu();
+        return;
+    }
+
+    let directory = '';
+    if (isElectronDownloadAvailable()) {
+        directory = await chooseDownloadDirectory();
+        if (!directory) {
+            hideContextMenu();
+            return;
+        }
+    }
+
+    const added = downloadQueueStore.enqueueTracks([{
+        hash: info.hash,
+        name: info.title,
+        author: info.author,
+        OriSongName: info.originalName,
+    }], { directory });
+
+    if (added > 0) {
+        $message.success('已加入下载队列');
+    } else {
+        $message.warning('加入下载队列失败');
+    }
+    hideContextMenu();
 };
 
 // 播放MV
