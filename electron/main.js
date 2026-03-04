@@ -12,8 +12,8 @@ import statusBarLyricsService from './services/statusBarLyricsService.js';
 import Store from 'electron-store';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { createWriteStream, constants as fsConstants } from 'fs';
-import { access, mkdir, unlink } from 'fs/promises';
+import { createWriteStream } from 'fs';
+import { mkdir, unlink } from 'fs/promises';
 import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
 import { t } from './language/i18n.js';
@@ -162,12 +162,8 @@ ipcMain.on('disclaimer-response', (event, accepted) => {
 ipcMain.on('window-control', (event, action) => {
     switch (action) {
         case 'close':
-            if (store.get('settings')?.minimizeToTray === 'off') {
-                app.isQuitting = true;
-                app.quit();
-            } else {
-                mainWindow.close();
-            }
+            app.isQuitting = true;
+            app.quit();
             break;
         case 'minimize':
             mainWindow.minimize();
@@ -293,27 +289,7 @@ const sanitizeFileName = (name, fallback = 'track.mp3') => {
     return safeName || fallback;
 };
 
-const ensureUniqueFilePath = async (directory, fileName) => {
-    const parsed = path.parse(fileName);
-    const baseName = parsed.name || 'track';
-    const ext = parsed.ext || '';
-
-    let attempt = 0;
-    while (true) {
-        const suffix = attempt === 0 ? '' : ` (${attempt})`;
-        const candidatePath = path.join(directory, `${baseName}${suffix}${ext}`);
-
-        try {
-            await access(candidatePath, fsConstants.F_OK);
-            attempt++;
-        } catch (error) {
-            if (error.code === 'ENOENT') {
-                return candidatePath;
-            }
-            throw error;
-        }
-    }
-};
+const resolveTargetFilePath = (directory, fileName) => path.join(directory, sanitizeFileName(fileName, 'track.mp3'));
 
 const downloadRemoteFileToPath = async (url, targetPath) => {
     const response = await fetch(url, { redirect: 'follow' });
@@ -345,8 +321,7 @@ ipcMain.handle('download-file-to-directory', async (event, payload = {}) => {
 
     try {
         await mkdir(directory, { recursive: true });
-        const safeFileName = sanitizeFileName(fileName, 'track.mp3');
-        const targetPath = await ensureUniqueFilePath(directory, safeFileName);
+        const targetPath = resolveTargetFilePath(directory, fileName);
         await downloadRemoteFileToPath(url, targetPath);
 
         return {

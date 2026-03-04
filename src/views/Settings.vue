@@ -223,6 +223,7 @@ const selectedSettings = ref({
     quality: { displayText: t('pu-tong-yin-zhi'), value: 'normal' },
     playbackQuality: { displayText: t('pu-tong-yin-zhi'), value: 'normal' },
     downloadQuality: { displayText: t('pu-tong-yin-zhi'), value: 'normal' },
+    downloadConcurrency: { displayText: '2', value: '2' },
     lyricsBackground: { displayText: t('da-kai'), value: 'on' },
     desktopLyrics: { displayText: t('guan-bi'), value: 'off' },
     statusBarLyrics: { displayText: t('guan-bi'), value: 'off' },
@@ -294,11 +295,6 @@ const settingSections = computed(() => [
                 icon: '🎧 '
             },
             {
-                key: 'downloadQuality',
-                label: '下载音质',
-                icon: '🎧 '
-            },
-            {
                 key: 'loudnessNormalization',
                 label: t('ping-heng-yin-pin-xiang-du'),
                 icon: '🎚️ ',
@@ -321,6 +317,21 @@ const settingSections = computed(() => [
                 key: 'greetings',
                 label: t('qi-dong-wen-hou-yu'),
                 icon: '👋 '
+            }
+        ]
+    },
+    {
+        title: '下载',
+        items: [
+            {
+                key: 'downloadQuality',
+                label: '下载音质',
+                icon: '🎧 '
+            },
+            {
+                key: 'downloadConcurrency',
+                label: '同时下载数量',
+                icon: '🧵 '
             },
             {
                 key: 'dataSource',
@@ -458,6 +469,7 @@ const getSectionIcon = (title) => {
     const iconMap = {
         [t('jie-mian')]: 'fas fa-palette',
         [t('sheng-yin')]: 'fas fa-volume-up',
+        ['下载']: 'fas fa-download',
         [t('ge-ci')]: 'fas fa-music',
         [t('cha-jian')]: 'fas fa-puzzle-piece',
         [t('xi-tong')]: 'fas fa-cog'
@@ -476,6 +488,7 @@ const getItemIcon = (key) => {
         'quality': 'fas fa-headphones',
         'playbackQuality': 'fas fa-headphones',
         'downloadQuality': 'fas fa-download',
+        'downloadConcurrency': 'fas fa-layer-group',
         'loudnessNormalization': 'fas fa-sliders-h',
         'pauseOnAudioOutputChange': 'fas fa-exchange-alt',
         'audioOutputDevice': 'fas fa-volume-up',
@@ -497,7 +510,8 @@ const getItemIcon = (key) => {
         'touchBar': 'fas fa-tablet-alt',
         'shortcuts': 'fas fa-keyboard',
         'pwa': 'fas fa-mobile-alt',
-        'proxy': 'fas fa-random'
+        'proxy': 'fas fa-random',
+        'dataSource': 'fas fa-database'
     };
     return iconMap[key] || 'fas fa-sliders-h';
 };
@@ -513,6 +527,14 @@ const qualityOptions = [
     { displayText: t('wu-sun-yin-zhi-1104kbps'), value: 'lossless' },
     { displayText: t('hires-yin-zhi'), value: 'hires' },
     { displayText: t('kui-she-chao-qing-yin-zhi'), value: 'viper' }
+];
+const downloadConcurrencyOptions = [
+    { displayText: '1', value: '1' },
+    { displayText: '2', value: '2' },
+    { displayText: '3', value: '3' },
+    { displayText: '4', value: '4' },
+    { displayText: '6', value: '6' },
+    { displayText: '8', value: '8' },
 ];
 
 // 选项配置
@@ -563,6 +585,10 @@ const selectionTypeMap = {
     downloadQuality: {
         title: '下载音质',
         options: qualityOptions
+    },
+    downloadConcurrency: {
+        title: '同时下载数量',
+        options: downloadConcurrencyOptions
     },
     lyricsBackground: {
         title: t('xian-shi-ge-ci-bei-jing'),
@@ -974,8 +1000,13 @@ const saveSettings = () => {
     );
     const playbackQuality = settingsToSave.playbackQuality || settingsToSave.quality || 'normal';
     const downloadQuality = settingsToSave.downloadQuality || playbackQuality;
+    const concurrencyRaw = Number(settingsToSave.downloadConcurrency);
+    const downloadConcurrency = Number.isFinite(concurrencyRaw)
+        ? Math.min(8, Math.max(1, Math.round(concurrencyRaw)))
+        : 2;
     settingsToSave.playbackQuality = playbackQuality;
     settingsToSave.downloadQuality = downloadQuality;
+    settingsToSave.downloadConcurrency = String(downloadConcurrency);
     // 兼容旧版本配置字段
     settingsToSave.quality = playbackQuality;
     settingsToSave.shortcuts = shortcuts.value;
@@ -1000,6 +1031,9 @@ onMounted(() => {
         }
         if (savedSettings.downloadQuality === undefined) {
             savedSettings.downloadQuality = savedSettings.playbackQuality || savedSettings.quality || 'normal';
+        }
+        if (savedSettings.downloadConcurrency === undefined) {
+            savedSettings.downloadConcurrency = '2';
         }
         for (const key in savedSettings) {
             if (key === 'shortcuts') continue;
@@ -1035,10 +1069,13 @@ onMounted(() => {
                 } else {
                     // Always get displayText from current translation, not from localStorage
                     const option = selectionTypeMap[key].options.find(
-                        (opt) => opt.value === savedSettings[key]
+                        (opt) => String(opt.value) === String(savedSettings[key])
                     );
-                    const displayText = option?.displayText || '🌏 ' + t('zi-dong');
-                    selectedSettings.value[key] = { displayText, value: savedSettings[key] };
+                    const fallbackText = key === 'language'
+                        ? '🌏 ' + t('zi-dong')
+                        : String(savedSettings[key] ?? '');
+                    const displayText = option?.displayText || fallbackText;
+                    selectedSettings.value[key] = { displayText, value: String(savedSettings[key]) };
                 }
             }
         }

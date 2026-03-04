@@ -114,14 +114,15 @@ export function createWindow() {
 
     mainWindow.on('close', (event) => {
         const savedConfig = store.get('settings');
-        if (savedConfig?.minimizeToTray === 'off') {
-            app.isQuitting = true;
-            app.quit();
-        }
-        if (!app.isQuitting) {
+        const shouldMinimizeToTray = savedConfig?.minimizeToTray !== 'off';
+
+        if (!app.isQuitting && shouldMinimizeToTray) {
             event.preventDefault();
             mainWindow.hide();
+            return;
         }
+
+        app.isQuitting = true;
     });
 
     if (process.platform === 'win32') {

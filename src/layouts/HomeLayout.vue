@@ -6,6 +6,7 @@
         </div>
         <router-view :playerControl="playerControl"></router-view>
     </main>
+    <DownloadQueuePanel />
     <PlayerControl ref="playerControl" />
 </template>
 
@@ -13,6 +14,7 @@
 import { ref, onMounted, onUnmounted } from 'vue';
 import Header from "@/components/Header.vue";
 import PlayerControl from "@/components/PlayerControl.vue";
+import DownloadQueuePanel from '@/components/DownloadQueuePanel.vue';
 import { setTheme, applyColorTheme } from '../utils/utils';
 const playerControl = ref(null);
 const isOnline = ref(navigator.onLine);
