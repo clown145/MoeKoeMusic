@@ -105,6 +105,7 @@
                 <span>进度 {{ batchDownloadProgress.current }}/{{ batchDownloadProgress.total }}</span>
                 <span>成功 {{ batchDownloadProgress.success }}</span>
                 <span>失败 {{ batchDownloadProgress.failed }}</span>
+                <span v-if="batchDownloadProgress.downgraded > 0">降级 {{ batchDownloadProgress.downgraded }}</span>
                 <span v-if="batchDownloadProgress.retries > 0">重试 {{ batchDownloadProgress.retries }}</span>
                 <span v-if="batchDownloadProgress.retriedSuccess > 0">重试成功 {{ batchDownloadProgress.retriedSuccess }}</span>
                 <span v-if="batchDownloadProgress.currentSong" class="batch-download-current-song" :title="batchDownloadProgress.currentSong">
@@ -298,6 +299,7 @@ const batchDownloadProgress = ref({
     current: 0,
     success: 0,
     failed: 0,
+    downgraded: 0,
     retries: 0,
     retriedSuccess: 0,
     currentSong: '',
@@ -1017,6 +1019,41 @@ const qualityMap = {
     viper: 'viper_clear'
 };
 
+const qualityLabelMap = {
+    normal: '128K',
+    high: '320K',
+    lossless: '无损',
+    hires: 'Hi-Res',
+    viper: '蝰蛇'
+};
+
+const qualityFallbackChain = {
+    viper: ['viper', 'hires', 'lossless', 'high', 'normal'],
+    hires: ['hires', 'lossless', 'high', 'normal'],
+    lossless: ['lossless', 'high', 'normal'],
+    high: ['high', 'normal'],
+    normal: ['normal']
+};
+
+const getQualityLabel = (qualityKey) => qualityLabelMap[qualityKey] || qualityKey || '未知';
+
+const normalizeQualityKey = (qualityKey) => {
+    if (qualityMap[qualityKey]) return qualityKey;
+    return 'normal';
+};
+
+const getDownloadQualityPreference = () => {
+    const settings = JSON.parse(localStorage.getItem('settings') || '{}');
+    return normalizeQualityKey(settings?.downloadQuality || settings?.playbackQuality || settings?.quality || 'normal');
+};
+
+const compactErrorMessage = (value, fallback = '获取歌曲下载链接失败') => {
+    const text = String(value || '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    return text || fallback;
+};
+
 const sanitizeFileName = (name, fallback = 'unknown') => {
     const safeName = String(name || '')
         .replace(/[\\/:*?"<>|]/g, '_')
@@ -1043,27 +1080,56 @@ const getDownloadExt = (extName, url) => {
 };
 
 const resolveSongDownloadInfo = async (hash) => {
-    const settings = JSON.parse(localStorage.getItem('settings') || '{}');
     const params = { hash };
+    const buildResult = (response, requestedQuality, actualQuality) => {
+        const downloadUrl = response.url[0];
+        return {
+            url: downloadUrl,
+            ext: getDownloadExt(response.extName, downloadUrl),
+            requestedQuality,
+            actualQuality,
+            downgraded: requestedQuality !== actualQuality
+        };
+    };
 
     if (!MoeAuth.isAuthenticated) {
         params.free_part = 1;
-    } else {
-        const quality = settings?.downloadQuality || settings?.playbackQuality || settings?.quality;
-        const mapped = qualityMap[quality];
-        if (mapped) params.quality = mapped;
+        const response = await get('/song/url', params);
+        if (response.status !== 1 || !response.url?.[0]) {
+            throw new Error('获取歌曲下载链接失败');
+        }
+        return buildResult(response, 'normal', 'normal');
     }
 
-    const response = await get('/song/url', params);
-    if (response.status !== 1 || !response.url?.[0]) {
-        throw new Error('获取歌曲下载链接失败');
+    const requestedQuality = getDownloadQualityPreference();
+    const fallbackQualities = qualityFallbackChain[requestedQuality] || ['normal'];
+    let lastResponse = null;
+
+    for (const qualityKey of fallbackQualities) {
+        const response = await get('/song/url', {
+            ...params,
+            quality: qualityMap[qualityKey]
+        });
+        lastResponse = response;
+
+        if (response.status === 1 && response.url?.[0]) {
+            return buildResult(response, requestedQuality, qualityKey);
+        }
+
+        if (response.status === 2) {
+            throw new Error('登录状态失效，请重新登录');
+        }
+
+        if (response.status === 3) {
+            throw new Error('该歌曲暂无版权');
+        }
     }
 
-    const downloadUrl = response.url[0];
-    return {
-        url: downloadUrl,
-        ext: getDownloadExt(response.extName, downloadUrl)
-    };
+    const triedQualitiesText = fallbackQualities.map(getQualityLabel).join(' -> ');
+    const reason = compactErrorMessage(
+        lastResponse?.error || lastResponse?.msg || lastResponse?.message
+    );
+    throw new Error(`所选音质不可用（已尝试：${triedQualitiesText}），${reason}`);
 };
 
 const isElectronBatchDownloadAvailable = () => {
@@ -1126,7 +1192,11 @@ const downloadSingleTrackOnce = async ({ song, index, useElectronBatchDownload, 
             directory: downloadDirectory,
             fileName,
         });
-        return;
+        return {
+            requestedQuality: info.requestedQuality,
+            actualQuality: info.actualQuality,
+            downgraded: !!info.downgraded
+        };
     }
 
     const response = await fetch(info.url);
@@ -1135,6 +1205,11 @@ const downloadSingleTrackOnce = async ({ song, index, useElectronBatchDownload, 
     }
     const blob = await response.blob();
     triggerBlobDownload(blob, fileName);
+    return {
+        requestedQuality: info.requestedQuality,
+        actualQuality: info.actualQuality,
+        downgraded: !!info.downgraded
+    };
 };
 
 const downloadTrackWithRetry = async ({
@@ -1151,7 +1226,7 @@ const downloadTrackWithRetry = async ({
     while (attempt <= BATCH_DOWNLOAD_MAX_ATTEMPTS) {
         onAttempt?.(attempt, BATCH_DOWNLOAD_MAX_ATTEMPTS);
         try {
-            await downloadSingleTrackOnce({
+            const meta = await downloadSingleTrackOnce({
                 song,
                 index,
                 useElectronBatchDownload,
@@ -1160,6 +1235,7 @@ const downloadTrackWithRetry = async ({
             return {
                 success: true,
                 attempts: attempt,
+                meta
             };
         } catch (error) {
             lastError = error;
@@ -1229,6 +1305,7 @@ const runBatchDownload = async (songsToDownload, confirmText) => {
         current: 0,
         success: 0,
         failed: 0,
+        downgraded: 0,
         retries: 0,
         retriedSuccess: 0,
         currentSong: '',
@@ -1238,8 +1315,10 @@ const runBatchDownload = async (songsToDownload, confirmText) => {
     let successCount = 0;
     let retriedSuccessCount = 0;
     let totalRetryCount = 0;
+    let downgradedCount = 0;
     const failedSongs = [];
     const failedTrackQueue = [];
+    const downgradedSongs = [];
     try {
         for (let i = 0; i < songsToDownload.length; i++) {
             const song = songsToDownload[i];
@@ -1273,6 +1352,17 @@ const runBatchDownload = async (songsToDownload, confirmText) => {
                     retriedSuccessCount++;
                     batchDownloadProgress.value.retriedSuccess = retriedSuccessCount;
                 }
+                if (result.meta?.downgraded) {
+                    downgradedCount++;
+                    batchDownloadProgress.value.downgraded = downgradedCount;
+                    downgradedSongs.push({
+                        order: i + 1,
+                        name: songName,
+                        artist: songArtist,
+                        from: getQualityLabel(result.meta.requestedQuality),
+                        to: getQualityLabel(result.meta.actualQuality),
+                    });
+                }
             } else {
                 console.error('[PlaylistDetail] 批量下载失败:', song?.name, result.reason);
                 failedSongs.push({
@@ -1296,12 +1386,15 @@ const runBatchDownload = async (songsToDownload, confirmText) => {
     const retrySummaryText = totalRetryCount > 0
         ? `，自动重试 ${totalRetryCount} 次（成功恢复 ${retriedSuccessCount} 首）`
         : '';
+    const downgradeSummaryText = downgradedCount > 0
+        ? `，音质自动降级 ${downgradedCount} 首`
+        : '';
 
     if (failedSongs.length === 0) {
         if (useElectronBatchDownload) {
-            $message.success(`批量下载完成，成功 ${successCount} 首${retrySummaryText}（保存到：${downloadDirectory}）`);
+            $message.success(`批量下载完成，成功 ${successCount} 首${retrySummaryText}${downgradeSummaryText}（保存到：${downloadDirectory}）`);
         } else {
-            $message.success(`批量下载完成，成功 ${successCount} 首${retrySummaryText}`);
+            $message.success(`批量下载完成，成功 ${successCount} 首${retrySummaryText}${downgradeSummaryText}`);
         }
         return;
     }
@@ -1313,12 +1406,20 @@ const runBatchDownload = async (songsToDownload, confirmText) => {
             `   重试次数：${item.retries}`
         )
         .join('\n');
+    const downgradedDetailText = downgradedSongs
+        .map(item =>
+            `${item.order}. ${item.artist} - ${item.name}\n` +
+            `   音质降级：${item.from} -> ${item.to}`
+        )
+        .join('\n');
 
     window.$modal.alert(
         `批量下载完成。\n总数：${songsToDownload.length} 首\n成功：${successCount} 首\n失败：${failedSongs.length} 首` +
         (retrySummaryText ? `\n${retrySummaryText.replace(/^，/, '')}` : '') +
+        (downgradeSummaryText ? `\n${downgradeSummaryText.replace(/^，/, '')}` : '') +
         (useElectronBatchDownload ? `\n保存目录：${downloadDirectory}` : '') +
         (failedDetailText ? `\n\n失败明细：\n${failedDetailText}` : '') +
+        (downgradedDetailText ? `\n\n音质降级明细：\n${downgradedDetailText}` : '') +
         (failedTrackQueue.length > 0 ? `\n\n可点击“重试失败下载 (${failedTrackQueue.length})”再次下载。` : '')
     );
 };
