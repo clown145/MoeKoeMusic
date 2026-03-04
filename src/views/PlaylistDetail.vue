@@ -1075,10 +1075,9 @@ const isElectronBatchDownloadAvailable = () => {
 };
 
 const buildDownloadFileName = (song, index, ext) => {
-    const prefix = String(index + 1).padStart(3, '0');
     const artist = sanitizeFileName(song.author, 'Unknown Artist');
     const title = sanitizeFileName(song.name || song.OriSongName, `Track_${index + 1}`);
-    return `${prefix} ${artist} - ${title}.${ext}`;
+    return `${artist} - ${title}.${ext}`;
 };
 
 const chooseDownloadDirectory = async () => {
